@@ -3,6 +3,7 @@
 use App\Http\Controllers\ArchivoController;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\CertificadoController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\ConvocatoriaController;
 use App\Http\Controllers\ConvocatoriaPublicaController;
@@ -66,7 +67,8 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
         Route::post('/proyectos/{id}/correcciones', [ProyectoController::class, 'enviarCorreccion'])->name('proyectos.correcciones');
         Route::post('/proyectos/observaciones', [ProyectoObservacionController::class, 'enviarObservacion']);
-
+        //finalizar proyecto
+        Route::post('proyectos/{projectId}/finalizar-fase-3', [ProyectoController::class, 'finalizarProyectoFase3']);
 
         // Nueva ruta para descargar archivos
         // Descarga de archivo
@@ -83,7 +85,17 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
         Route::get('/fase_convocatorias/{convocatoriaId}', [FaseConvocatoriaController::class, 'listarFases'])
             ->name('fase_convocatorias.list');
+        //Ruta del certificado por proyecto y estudiante   
+        Route::get('/convocatorias/proyectos', [CertificadoController::class, 'obtenerProyectos']);
+        Route::get('/proyecto/{proyecto_id}/participantes', [CertificadoController::class, 'obtenerParticipantesProyecto']);
+        Route::get('/certificado/{proyecto_id}/{estudiante_id}', [CertificadoController::class, 'generarCertificado']);
 
+        // Ruta para listar las convocatorias finalizadas
+        Route::get('/convocatorias/publicadas-finalizadas', [ConvocatoriaController::class, 'listarConvocatoriasPublicadasFinalizadas']);
+        // Ruta para obtener los proyectos finalizados de una convocatoria publicada o finalizada
+        // Route::get('/{convocatoriaId}/proyectos-finalizados', [ConvocatoriaController::class, 'listarProyectosConvocatoria']);
+        // Ruta para obtener los miembros (con sus certificados) de un proyecto
+        Route::get('/proyectos/{projectId}/miembros-certificados', [ProyectoController::class, 'getMiembrosConCertificados']);
 
 
         // Route::get('/proyectos', [ProyectoController::class, 'listarProyectos'])->name('proyectos.list');
@@ -97,6 +109,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
         Route::get('/fase_convocatorias/{convocatoriaId}/por_nombre', [FaseConvocatoriaController::class, 'obtenerFasePorNombre'])
             ->name('fase_convocatorias.obtenerPorNombre');
         // ...
+        Route::get('/certificados/docente/{userId}', [CertificadoController::class, 'getCertificadosPorDocente']);
 
 
     });
@@ -127,6 +140,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
         Route::get('/profesor/proyectos-aprobados', [ProyectoController::class, 'obtenerProyectosAprobadosDelDocente']);
         //subir archivos a proyecto
         Route::post('/proyectos/subir-fase', [ProyectoController::class, 'subirArchivosFase']);
+        Route::post('/proyectos/subir-fase-3', [ProyectoController::class, 'actualizarProyectoFase3']);
     });
 
 
@@ -135,5 +149,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
     // Rutas para estudiantes (si las agregas en el futuro)
     Route::middleware(['role:estudiante'])->prefix('convocatorias')->group(function () {
         // Aquí puedes agregar rutas específicas para estudiantes
+        Route::get('/certificados/estudiante/{userId}', [CertificadoController::class, 'getCertificadosPorEstudiante']);
+
     });
 });

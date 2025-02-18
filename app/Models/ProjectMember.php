@@ -35,4 +35,22 @@ class ProjectMember extends Model
     {
         return $this->belongsTo(User::class, 'user_id');
     }
+    // public function certificado()
+    // {
+    //     return $this->hasOne(Certificado::class, 'user_id', 'user_id')
+    //         ->whereColumn('project_id', 'project_members.project_id');
+    // }
+    public function certificado()
+    {
+        return $this->hasOne(Certificado::class, 'project_id', 'project_id')
+            ->whereColumn('certificados.user_id', $this->getTable() . '.user_id');
+    }
+    protected $appends = ['certificado'];
+
+    public function getCertificadoAttribute()
+    {
+        return \App\Models\Certificado::where('project_id', $this->project_id)
+            ->where('user_id', $this->user_id)
+            ->first();
+    }
 }

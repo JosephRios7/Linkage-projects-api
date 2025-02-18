@@ -16,10 +16,16 @@ class Docente extends Model
         'cedula',
         'correo',
         'telefono',
+        'user_id',
     ];
 
     public function proyecto()
     {
         return $this->belongsTo(Proyecto::class);
     }
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+
 }

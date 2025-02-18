@@ -9,10 +9,12 @@ class AddfasePresentacionToProyectosTable extends Migration
     public function up()
     {
         Schema::table('proyectos', function (Blueprint $table) {
-            // Agrega la columna "fasePresentacion". Puedes definirla como nullable o no, según tus necesidades.
-            $table->string('fasePresentacion')->nullable();
+            if (!Schema::hasColumn('proyectos', 'fasePresentacion')) {
+                $table->string('fasePresentacion')->nullable();
+            }
         });
     }
+
 
     public function down()
     {

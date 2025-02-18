@@ -14,11 +14,13 @@ use App\Models\ProjectMember;
 use App\Models\ProyectoArchivoFase;
 use App\Models\ProyectoObservacion;
 use App\Models\User;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use SimpleSoftwareIO\QrCode\Facades\QrCode;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ProyectoController extends Controller
@@ -113,7 +115,8 @@ class ProyectoController extends Controller
                     'nombre'   => $docenteData['nombre'],
                     'apellido' => $docenteData['apellido'],
                     'correo'   => $docenteData['correo'],
-                    'telefono' => $docenteData['telefono']
+                    'telefono' => $docenteData['telefono'],
+                    'user_id' => $docenteUserId,
                 ]
             );
 
@@ -125,6 +128,21 @@ class ProyectoController extends Controller
 
             // 4. Procesar los estudiantes
             foreach ($request->estudiantes as $estudianteData) {
+
+                // Verificar si el estudiante ya existe por cédula
+                $existingEstudiante = Estudiante::where('cedula', $estudianteData['cedula'])->first();
+
+                // Si existe y su estado NO es "reprobado", se asume que ya está inscrito en otro proyecto activo o aprobado
+                if ($existingEstudiante && $existingEstudiante->estado !== 'reprobado') {
+                    throw new \Exception("El estudiante con cédula {$estudianteData['cedula']} ya se encuentra inscrito en otro proyecto activo o aprobado.");
+                }
+
+                // Si existe pero su estado es "reprobado", actualizamos su estado a "activo" (o el estado que corresponda)
+                if ($existingEstudiante && $existingEstudiante->estado === 'reprobado') {
+                    $existingEstudiante->estado = 'activo';
+                    $existingEstudiante->save();
+                }
+
                 // Buscar el usuario por correo
                 $userEstudiante = User::where('email', $estudianteData['correo'])->first();
 
@@ -152,7 +170,9 @@ class ProyectoController extends Controller
                         'nombre'   => $estudianteData['nombre'],
                         'apellido' => $estudianteData['apellido'],
                         'genero'   => $estudianteData['genero'],
-                        'correo'   => $estudianteData['correo']
+                        'correo'   => $estudianteData['correo'],
+                        'user_id' => $estudianteUserId,
+                        'estado'   => 'activo'  // Se asigna el estado activo para nuevos registros o reactivación de los reprobados
                     ]
                 );
 
@@ -329,7 +349,8 @@ class ProyectoController extends Controller
                             'nombre'   => $estudianteData['nombre'],
                             'apellido' => $estudianteData['apellido'],
                             'genero'   => $estudianteData['genero'],
-                            'correo'   => $estudianteData['correo']
+                            'correo'   => $estudianteData['correo'],
+                            'user_id' => $userEstudiante->id,
                         ]
                     );
                     // Vincular en project_members
@@ -545,99 +566,376 @@ class ProyectoController extends Controller
         }
     }
 
-    // public function subirArchivosFase(Request $request)
+    public function actualizarProyectoFase3(Request $request)
+    {
+        DB::beginTransaction();
+
+        try {
+            Log::info('Nuevos campos para fase 3: ', ['request' => $request->all()]);
+
+            // 1. Validar datos, incluyendo resumen y nota_docente para estudiantes
+            $validatedData = $request->validate([
+                'convocatoria_id' => 'required|exists:convocatorias,id',
+                'proyecto_id'               => 'required|exists:proyectos,id',
+                'resumen'                   => 'nullable|string',
+                'estudiantes'               => 'nullable|array',
+                'estudiantes.*.correo'        => 'required|email|max:255',
+                'estudiantes.*.cedula'        => 'required|string|max:10',
+                'estudiantes.*.nota_docente' => 'nullable|numeric|min:0|max:10',
+                // ... validación de archivos ...
+            ]);
+
+            // 2. Obtener el proyecto
+            $proyecto = Proyecto::findOrFail($validatedData['proyecto_id']);
+            // Guardamos el estado anterior para saber si estaba en "correcciones"
+            $estadoAnterior = $proyecto->estado;
+            // 3. Actualizar campos básicos y el resumen
+            $proyecto->update([
+                'estado'                   => 'enviado',
+                'estado_fase'              => 'subida',
+                'resumen'                  => $validatedData['resumen'],
+            ]);
+
+            // 5. Procesar los estudiantes
+            if (!empty($validatedData['estudiantes'])) {
+                foreach ($validatedData['estudiantes'] as $estudianteData) {
+                    // Buscar o crear usuario para el estudiante
+                    // Buscar o crear usuario para el estudiante
+                    $userEstudiante = User::where('email', $estudianteData['correo'])->first();
+
+                    // Actualizar o crear registro en la tabla 'estudiantes'
+                    Estudiante::updateOrCreate(
+                        ['cedula' => $estudianteData['cedula']],
+                        [
+                            'user_id' => $userEstudiante->id,
+                            'nota_docente' => $estudianteData['nota_docente'] ?? null,
+                        ]
+                    );
+                    // Vincular en project_members
+                    // if ($estudianteData['nota_docente']) {
+                    //     // Vincular en project_members, incluyendo la nota_docente
+                    //     ProjectMember::updateOrCreate(
+                    //         ['project_id' => $proyecto->id, 'user_id' => $userEstudiante->id],
+                    //         [
+                    //             'role' => 'estudiante',
+                    //              'nota_docente' => $estudianteData['nota_docente'] ?? null,
+                    //         ]
+                    //     );
+                    // }
+                }
+            }
+            // 5. Procesar archivos según la fase del proyecto
+            // Determinar el nombre de la fase
+            $faseName = ($proyecto->fase === 'Fase3') ? 'Cierre de Proyectos de Vinculación' : 'Presentación de Propuestas';
+            $convocatoria = Convocatoria::findOrFail($validatedData['convocatoria_id']);
+            $fase = FaseConvocatoria::where('convocatoria_id', $convocatoria->id)
+                ->where('nombre', $faseName)
+                ->first();
+
+            if ($fase && $request->hasFile('archivos')) {
+                foreach ($request->file('archivos') as $file) {
+                    $base64File = base64_encode(file_get_contents($file->getRealPath()));
+                    ProyectoArchivoFase::create([
+                        'proyecto_id' => $proyecto->id,
+                        'fase_id'     => $fase->id,
+                        'titulo'      => $file->getClientOriginalName(),
+                        'file_data'   => $base64File,
+                        'mime_type'   => $file->getMimeType(),
+                    ]);
+                }
+            }
+
+            // 6. Actualizar observaciones, etc. (según tu lógica)
+
+            // 8. Si el proyecto estaba previamente en "correcciones", actualizar las observaciones pendientes a "cumplida"
+            if ($estadoAnterior === 'correcciones') {
+                // Suponiendo que las observaciones pendientes tienen estado "pendiente"
+                \App\Models\ProyectoObservacion::where('proyecto_id', $proyecto->id)
+                    ->where('estado', 'pendiente')
+                    ->update(['estado' => 'cumplida']);
+            }
+
+
+            DB::commit();
+
+            return response()->json([
+                'message' => 'Proyecto actualizado correctamente.'
+            ], 200);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            DB::rollBack();
+            return response()->json([
+                'message' => 'Error al actualizar el proyecto.',
+                'errors'  => $e->errors(),
+            ], 422);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Error al actualizar proyecto: ' . $e->getMessage());
+            return response()->json([
+                'message' => 'Error al actualizar el proyecto.',
+                'error'   => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    // public function finalizarProyectoFase3(Request $request, $projectId)
     // {
-    //     DB::beginTransaction();
+    //     // Validar que se envíe el arreglo de estudiantes con sus notas administrativas
+    //     $validatedData = $request->validate([
+    //         'proyecto_id'               => 'required|exists:proyectos,id',
+    //         'estudiantes' => 'required|array',
+    //         'estudiantes.*.id' => 'required|exists:estudiantes,id',
+    //         'estudiantes.*.nota_admin' => 'required|numeric|min:1|max:10',
+    //     ]);
 
-    //     try {
-    //         // 1. Validar
-    //         //    - 'fase' => 'required|in:Fase2,Fase3' (o Fase1 si deseas)
-    //         $validatedData = $request->validate([
-    //             'proyecto_id'    => 'required|exists:proyectos,id',
-    //             'fase'           => 'required|string|in:Fase1,Fase2,Fase3',
-    //             'archivos'       => 'nullable|array',
-    //             'archivos.*'     => 'file|mimes:pdf,doc,docx|max:10240', // 10 MB
+    //     // Buscar el proyecto
+    //     $proyecto = Proyecto::findOrFail($projectId);
+
+    //     // Recorrer cada estudiante y actualizar su nota final y estado
+    //     foreach ($validatedData['estudiantes'] as $estudianteData) {
+    //         // Se asume que la nota del docente ya se encuentra almacenada
+    //         $estudiante = Estudiante::findOrFail($estudianteData['id']);
+    //         $notaDocente = $estudiante->nota_docente;
+    //         $notaAdmin = $estudianteData['nota_admin'];
+
+    //         // Calcular el promedio y redondear a dos decimales
+    //         $notaFinal = round(($notaDocente + $notaAdmin) / 2, 2);
+
+    //         // Determinar el estado según el promedio
+    //         $estado = ($notaFinal >= 7) ? 'aprobado' : 'reprobado';
+
+    //         // Actualizar el registro del estudiante
+    //         $estudiante->update([
+    //             'nota_admin' => $notaAdmin,
+    //             'nota_final' => $notaFinal,
+    //             'estado'     => $estado,
     //         ]);
-
-    //         $proyecto = Proyecto::findOrFail($validatedData['proyecto_id']);
-
-    //         // 2. Opcional: Verificar que la fase del proyecto coincida con la solicitada
-    //         //    (por ejemplo, no subir archivos Fase3 si el proyecto no está en Fase3)
-    //         if ($proyecto->fase !== $validatedData['fase']) {
-    //             return response()->json([
-    //                 'message' => "El proyecto no se encuentra realmente en {$validatedData['fase']}."
-    //             ], 400);
-    //         }
-
-    //         // 3. Buscar la fase en la tabla 'fase_convocatorias'
-    //         //    Dependiendo de si tu BD guarda:
-    //         //    - 'Fase2' => 'Avance de Proyectos de Vinculación'
-    //         //    - 'Fase3' => 'Cierre de Proyectos de Vinculación'
-    //         //    Ajusta la lógica a tu gusto:
-
-    //         $nombreFaseBD = null;
-    //         if ($validatedData['fase'] === 'Fase2') {
-    //             $nombreFaseBD = 'Avance de Proyectos de Vinculación';
-    //         } elseif ($validatedData['fase'] === 'Fase3') {
-    //             $nombreFaseBD = 'Cierre de Proyectos de Vinculación';
-    //         } else {
-    //             // Maneja otros casos Fase1, etc.
-    //             $nombreFaseBD = 'Presentación de Propuestas';
-    //         }
-
-    //         // Buscar la fase correspondiente en 'fase_convocatorias'
-    //         $fase = FaseConvocatoria::where('convocatoria_id', $proyecto->convocatoria_id)
-    //             ->where('nombre', $nombreFaseBD)
-    //             ->first();
-
-    //         if (!$fase) {
-    //             return response()->json([
-    //                 'message' => "No se encontró la fase '$nombreFaseBD' para este proyecto."
-    //             ], 404);
-    //         }
-
-    //         // 4. Procesar los archivos
-    //         if ($request->hasFile('archivos')) {
-    //             foreach ($request->file('archivos') as $file) {
-    //                 $base64File = base64_encode(file_get_contents($file->getRealPath()));
-
-    //                 ProyectoArchivoFase::create([
-    //                     'proyecto_id' => $proyecto->id,
-    //                     'fase_id'     => $fase->id,
-    //                     'titulo'      => $file->getClientOriginalName(),
-    //                     'file_data'   => $base64File,
-    //                     'mime_type'   => $file->getMimeType(),
-    //                 ]);
-    //             }
-    //         }
-
-    //         // 5. Actualizar estado/estado_fase del proyecto
-    //         //    (Ejemplo: al subir archivos, el proyecto pasa a 'enviado' y 'subida')
-    //         $proyecto->update([
-    //             'estado'       => 'enviado',
-    //             'estado_fase'  => 'subida',
-    //         ]);
-
-    //         DB::commit();
-
-    //         return response()->json([
-    //             'message' => "Archivos subidos correctamente en {$validatedData['fase']}."
-    //         ], 200);
-    //     } catch (\Illuminate\Validation\ValidationException $e) {
-    //         DB::rollBack();
-    //         return response()->json([
-    //             'message' => 'Error al subir archivos de la fase.',
-    //             'errors'  => $e->errors(),
-    //         ], 422);
-    //     } catch (\Exception $e) {
-    //         DB::rollBack();
-    //         Log::error('Error al subir archivos Fase: ' . $e->getMessage());
-    //         return response()->json([
-    //             'message' => 'Error al subir archivos de la fase.',
-    //             'error'   => $e->getMessage(),
-    //         ], 500);
     //     }
+
+    //     // Marcar el proyecto como finalizado o actualizar su estado de fase
+    //     $proyecto->update([
+    //         'estado_fase' => 'finalizada',
+    //         'estado' => 'finalizado',
+    //     ]);
+
+    //     return response()->json([
+    //         'message' => 'Proyecto finalizado y notas actualizadas correctamente.'
+    //     ], 200);
     // }
+    public function finalizarProyectoFase3(Request $request, $projectId)
+    {
+        Log::info('Iniciando finalizacion de proyecto y certificados', ['request' => $request->all()]);
+        // Validar que se envíe el arreglo de estudiantes con sus notas administrativas
+        $validatedData = $request->validate([
+            // 'proyecto_id'               => 'required|exists:proyectos,id',
+            'estudiantes'               => 'required|array',
+            'estudiantes.*.id'          => 'required|exists:estudiantes,id',
+            'estudiantes.*.nota_admin'  => 'required|numeric|min:1|max:10',
+        ]);
+
+        // Buscar el proyecto
+        $proyecto = Proyecto::findOrFail($projectId);
+
+        // Recorrer cada estudiante y actualizar su nota final y estado
+        foreach ($validatedData['estudiantes'] as $estudianteData) {
+            $estudiante = Estudiante::findOrFail($estudianteData['id']);
+            $notaDocente = $estudiante->nota_docente;
+            $notaAdmin = $estudianteData['nota_admin'];
+
+            // Calcular el promedio y redondear a dos decimales
+            $notaFinal = round(($notaDocente + $notaAdmin) / 2, 2);
+
+            // Determinar el estado según el promedio
+            $estado = ($notaFinal >= 7) ? 'aprobado' : 'reprobado';
+
+            // Actualizar el registro del estudiante
+            $estudiante->update([
+                'nota_admin'  => $notaAdmin,
+                'nota_final'  => $notaFinal,
+                'estado'      => $estado,
+            ]);
+        }
+
+        // Marcar el proyecto como finalizado o actualizar su estado de fase
+        $proyecto->update([
+            'estado_fase' => 'finalizada',
+            'estado'      => 'finalizado',
+        ]);
+
+        // Generar certificados para estudiantes aprobados
+        foreach ($validatedData['estudiantes'] as $estudianteData) {
+            $estudiante = Estudiante::findOrFail($estudianteData['id']);
+            if ($estudiante->estado === 'aprobado') {
+                // Generar contenido del código QR
+                $qrData = "Universidad Estatal de Bolívar :: Certificado de Vinculación ::
+                       Nombre: {$estudiante->nombre} {$estudiante->apellido} ::
+                       Cédula: {$estudiante->cedula} ::
+                       Código Proyecto: {$proyecto->codigo_proyecto} ::
+                       Número Resolución: {$proyecto->numero_resolucion}";
+                $qrCode = base64_encode(QrCode::format('svg')->size(200)->generate($qrData));
+
+                // Genera el número de certificado secuencial
+                $numeroCertificado = \App\Models\Certificado::generarNumeroCertificado();
+
+                // Datos a enviar a la vista del certificado
+                $data = [
+                    'proyecto'         => $proyecto->nombre,
+                    'codigo'           => $proyecto->codigo_proyecto,
+                    'resolucion'       => $proyecto->numero_resolucion,
+                    'estudiante'       => "{$estudiante->nombre} {$estudiante->apellido}",
+                    'cedula'           => $estudiante->cedula,
+                    'estudiante_email' => $estudiante->correo,
+                    // 'fecha'            => now()->format('d-m-Y'),
+                    'fecha' => \Carbon\Carbon::now('America/Guayaquil')->format('d-m-Y'),
+                    'qrCode'           => $qrCode,
+                    'certificado'      => $numeroCertificado,  // <-- Aquí se pasa el número de certificado
+                    'nota_final' => $estudiante->nota_final,
+                ];
+
+                // Generar el PDF del certificado
+                $pdf = Pdf::loadView('certificados.certificado', $data)
+                    ->setPaper('A4', 'landscape')
+                    ->setOption('margin-left', 0)
+                    ->setOption('margin-right', 0)
+                    ->setOption('margin-top', 0)
+                    ->setOption('margin-bottom', 0);
+
+                // Obtener el contenido binario del PDF
+                $pdfContent = $pdf->output();
+
+                // Guardar el certificado en la tabla "certificados"
+                \App\Models\Certificado::create([
+                    'project_id'        => $proyecto->id,
+                    'user_id'           => $estudiante->user_id, // O bien, el id del usuario relacionado
+                    'numero_certificado' => $numeroCertificado,
+                    'fecha_emision'     => now()->format('Y-m-d'),
+                    'rol'               => 'estudiante',
+                    'estado'            => 'activo',
+                    'titulo'            => 'Certificado de Participación',
+                    'file_data'         => base64_encode($pdfContent),
+                    'mime_type'         => 'application/pdf',
+                ]);
+            }
+        }
+
+
+        // Generar certificados para los docentes (pueden ser varios)
+        // $docentes = $proyecto->miembros()->where('role', 'profesor')->with('user')->get();
+        $docentes = $proyecto->miembros()
+        ->where('role', 'profesor')
+        ->with(['user', 'user.docente'])
+        ->get();
+        // foreach ($docentes as $docente) {
+        //     // Generar contenido del código QR para el docente
+        //     $qrData = "Universidad Estatal de Bolívar :: Certificado de Vinculación ::
+        //            Nombre: {$docente->user->name} ::
+        //            Código Proyecto: {$proyecto->codigo_proyecto} ::
+        //            Número Resolución: {$proyecto->numero_resolucion}";
+        //     $qrCode = base64_encode(QrCode::format('svg')->size(200)->generate($qrData));
+
+        //     // Datos para la vista del certificado (puedes ajustar los campos según corresponda)
+        //     $numeroCertificado = \App\Models\Certificado::generarNumeroCertificado();
+
+        //     $data = [
+        //         'proyecto'         => $proyecto->nombre,
+        //         'codigo'           => $proyecto->codigo_proyecto,
+        //         'resolucion'       => $proyecto->numero_resolucion,
+        //         'estudiante'       => $docente->nombre,
+        //         'cedula'           => $docente->cedula, // Si no se cuenta con cédula, se usa otro identificador
+        //         'estudiante_email' => $docente->user->email,
+        //         // 'fecha'            => now()->format('d-m-Y'),
+        //         'fecha' => \Carbon\Carbon::now('America/Guayaquil')->format('d-m-Y'),
+        //         'qrCode'           => $qrCode,
+        //         'certificado'      => $numeroCertificado  // <-- Aquí se pasa el número de certificado
+        //     ];
+
+        //     // Generar el PDF del certificado
+        //     $pdf = Pdf::loadView('certificados.certificado', $data)
+        //         ->setPaper('A4', 'landscape')
+        //         ->setOption('margin-left', 0)
+        //         ->setOption('margin-right', 0)
+        //         ->setOption('margin-top', 0)
+        //         ->setOption('margin-bottom', 0);
+
+        //     $pdfContent = $pdf->output();
+
+        //     // Guardar el certificado del docente en la tabla "certificados"
+        //     \App\Models\Certificado::create([
+        //         'project_id'        => $proyecto->id,
+        //         'user_id'           => $docente->user->id,
+        //         'numero_certificado' => $numeroCertificado,
+        //         'fecha_emision'     => now()->format('Y-m-d'),
+        //         'rol'               => 'docente',
+        //         'estado'            => 'activo',
+        //         'titulo'            => 'Certificado de Participación',
+        //         'file_data'         => base64_encode($pdfContent),
+        //         'mime_type'         => 'application/pdf',
+        //     ]);
+        // }
+        foreach ($docentes as $docenteMember) {
+            // Obtiene el registro docente a través del usuario relacionado
+            $docenteData = $docenteMember->user->docente;
+
+            // Verifica que exista la información del docente
+            if (!$docenteData) {
+                Log::warning("No se encontró información de docente para el usuario {$docenteMember->user->id}");
+                continue;
+            }
+
+            // Generar contenido del código QR para el docente
+            $qrData = "Universidad Estatal de Bolívar :: Certificado de Vinculación ::
+               Nombre: {$docenteData->nombre} {$docenteData->apellido} ::
+               Código Proyecto: {$proyecto->codigo_proyecto} ::
+               Número Resolución: {$proyecto->numero_resolucion}";
+            $qrCode = base64_encode(QrCode::format('svg')->size(200)->generate($qrData));
+
+            // Generar el número secuencial del certificado
+            $numeroCertificado = \App\Models\Certificado::generarNumeroCertificado();
+
+            // Datos para la vista del certificado
+            $data = [
+                'proyecto'         => $proyecto->nombre,
+                'codigo'           => $proyecto->codigo_proyecto,
+                'resolucion'       => $proyecto->numero_resolucion,
+                // Aquí usamos el nombre y apellido del docente obtenido de la relación
+                'estudiante'       => $docenteData->nombre . ' ' . $docenteData->apellido,
+                'cedula'           => $docenteData->cedula,
+                'estudiante_email' => $docenteMember->user->email,
+                'fecha'            => \Carbon\Carbon::now('America/Guayaquil')->format('d-m-Y'),
+                'qrCode'           => $qrCode,
+                'certificado'      => $numeroCertificado
+            ];
+
+            // Generar el PDF del certificado
+            $pdf = Pdf::loadView('certificados.certificado', $data)
+                ->setPaper('A4', 'landscape')
+                ->setOption('margin-left', 0)
+                ->setOption('margin-right', 0)
+                ->setOption('margin-top', 0)
+                ->setOption('margin-bottom', 0);
+
+            $pdfContent = $pdf->output();
+
+            // Guardar el certificado del docente en la tabla "certificados"
+            \App\Models\Certificado::create([
+                'project_id'         => $proyecto->id,
+                'user_id'            => $docenteMember->user->id,
+                'numero_certificado' => $numeroCertificado,
+                'fecha_emision'      => \Carbon\Carbon::now('America/Guayaquil')->format('Y-m-d'),
+                'rol'                => 'docente',
+                'estado'             => 'activo',
+                'titulo'             => 'Certificado de Participación',
+                'file_data'          => base64_encode($pdfContent),
+                'mime_type'          => 'application/pdf',
+            ]);
+        }
+
+        return response()->json([
+            'message' => 'Proyecto finalizado, notas actualizadas y certificados generados correctamente.'
+        ], 200);
+    }
+
+
+
     public function downloadProyecto($archivoId)
     {
         $archivo = ProyectoArchivoFase::find($archivoId);
@@ -672,28 +970,6 @@ class ProyectoController extends Controller
         }
     }
 
-
-    // Obtener un proyecto por su ID
-    // public function verProyecto($id)
-    // {
-    //     try {
-    //         // Buscar el proyecto por ID e incluir las relaciones
-    //         $proyecto = Proyecto::with(['docenteCoordinador', 'estudiantes', 'archivos'])->findOrFail($id);
-    //         // Generar URLs completas para los archivos
-    //         $proyecto->archivos->transform(function ($archivo) {
-    //             $archivo->file_path = url(Storage::url($archivo->file_path)); // Genera una URL completa
-    //             return $archivo;
-    //         });
-
-    //         return response()->json($proyecto, 200);
-    //     } catch (\Exception $e) {
-    //         return response()->json([
-    //             'message' => 'Error al obtener los detalles del proyecto.',
-    //             'error' => $e->getMessage(),
-    //         ], 500);
-    //     }
-    // }
-
     //sirve usando la ruta convocatorias/{id}/proyectos
     public function listarProyectosPorConvocatoria($id)
     {
@@ -711,27 +987,6 @@ class ProyectoController extends Controller
             return response()->json(['error' => 'Convocatoria no encontrada.'], 404);
         }
     }
-
-
-    /**
-     * Aprobar Proyecto y Asignar Código de Proyecto y Número de Resolución
-     */
-    // public function aprobarProyecto(Request $request, $id)
-    // {
-    //     $request->validate([
-    //         'codigo_proyecto' => 'required|string|max:50',
-    //         'numero_resolucion' => 'required|string|max:50',
-    //     ]);
-
-    //     $proyecto = Proyecto::findOrFail($id);
-    //     $proyecto->estado = 'aprobado';
-    //     $proyecto->estado_fase = 'aprobado'; // Permite que el docente pase a la siguiente fase
-    //     $proyecto->codigo_proyecto = $request->codigo_proyecto;
-    //     $proyecto->numero_resolucion = $request->numero_resolucion;
-    //     $proyecto->save();
-
-    //     return response()->json(['message' => 'Proyecto aprobado correctamente.']);
-    // }
 
     public function aprobarProyectoFase1(Request $request, $id)
     {
@@ -775,12 +1030,12 @@ class ProyectoController extends Controller
     {
         $proyecto = Proyecto::findOrFail($id);
 
-        // Verificar que esté en Fase2 o Fase3
-        if (!in_array($proyecto->fase, ['Fase2', 'Fase3'])) {
-            return response()->json(['message' => 'El proyecto no está en Fase2 o Fase3.'], 400);
+        // Verificar que esté en Fase2
+        if (!in_array($proyecto->fase, ['Fase2'])) {
+            return response()->json(['message' => 'El proyecto no está en Fase2.'], 400);
         }
 
-        // Verificar estado_fase: aquí exiges que sea si estás en Fase2/Fase3
+        // Verificar estado_fase: aquí exiges que sea si estás en Fase2
         if ($proyecto->estado_fase !== 'subida') {
             return response()->json([
                 'message' => 'No se puede aprobar la Fase porque estado_fase no es "subida".'
@@ -854,4 +1109,18 @@ class ProyectoController extends Controller
             return response()->json(['error' => 'Error al obtener el estado del proyecto'], 500);
         }
     }
+    public function getMiembrosConCertificados($projectId)
+    {
+        $proyecto = \App\Models\Proyecto::with(['miembros.user'])->findOrFail($projectId);
+
+        // Si deseas que cada miembro incluya su certificado (activando el accesor)
+        $miembros = $proyecto->miembros->map(function ($miembro) {
+            // Esto carga el certificado para cada miembro usando el accesor
+            $miembro->certificado;
+            return $miembro;
+        });
+
+        return response()->json($miembros);
+    }
+    
 }

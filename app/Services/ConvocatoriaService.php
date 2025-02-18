@@ -11,9 +11,9 @@ class ConvocatoriaService
     {
         try {
             // Cambiar convocatorias "publicado" a "finalizado" si ya pasó la fecha_fin
-            Convocatoria::where('estado', 'publicado')
+            Convocatoria::where('estado', 'Publicado')
                 ->where('fecha_fin', '<', now())
-                ->update(['estado' => 'finalizado']);
+                ->update(['estado' => 'Finalizado']);
         } catch (\Exception $e) {
             Log::error('Error al actualizar estados de convocatorias: ' . $e->getMessage());
         }

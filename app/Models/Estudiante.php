@@ -16,10 +16,20 @@ class Estudiante extends Model
         'cedula',
         'genero',
         'correo',
+        'nota_docente',
+        'nota_admin',
+        'estado',
+        'nota_final',
+        'user_id',
     ];
 
     public function proyecto()
     {
         return $this->belongsTo(Proyecto::class);
+    }
+
+    public function user()
+    {
+        return $this->belongsTo(User::class);
     }
 }

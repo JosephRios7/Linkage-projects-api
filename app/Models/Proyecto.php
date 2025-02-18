@@ -26,6 +26,7 @@ class Proyecto extends Model
         'codigo_proyecto',
         'numero_resolucion',
         'estado_fase',
+        'resumen'
     ];
 
     public function convocatoria()
@@ -57,10 +58,21 @@ class Proyecto extends Model
         // y se relaciona con el usuario a través de user_id
         return $this->hasMany(ProjectMember::class, 'project_id');
     }
+    public function estudiantes()
+    {
+        return $this->hasMany(ProjectMember::class, 'project_id')
+        ->where('role', 'estudiante')
+        ->with('user'); // Esto asume que en ProjectMember hay una relación con User
+    }
 
     public function archivos()
     {
         // Relación con los archivos que se suben para la fase de presentación de propuestas
         return $this->hasMany(ProyectoArchivoFase::class, 'proyecto_id');
     }
+    public function certificados()
+    {
+        return $this->hasMany(Certificado::class, 'project_id');
+    }
+
 }

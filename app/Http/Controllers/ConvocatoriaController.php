@@ -71,51 +71,7 @@ class ConvocatoriaController extends Controller
                 throw new \Exception('Las fases no están en el formato correcto.');
             }
 
-            // foreach ($fases as $index => $faseData) {
-            //     Log::info('Creando fase', ['fase' => $faseData]);
-
-            //     if (!isset($faseData['nombre'], $faseData['fecha_inicio'], $faseData['fecha_fin'])) {
-            //         throw new \Exception("Datos de fase inválidos en la fase {$index}.");
-            //     }
-
-            //     // ✅ Convertir `estado` a booleano correcto
-            //     $estado = filter_var($faseData['estado'], FILTER_VALIDATE_BOOLEAN);
-
-            //     // Insertar la fase en la base de datos
-            //     $faseId = DB::table('fase_convocatorias')->insertGetId([
-            //         'convocatoria_id' => $convocatoriaId,
-            //         'nombre' => $faseData['nombre'],
-            //         'estado' => $estado, // Aquí aseguramos que `estado` sea un booleano
-            //         'resumen' => $faseData['resumen'] ?? '',
-            //         'fecha_inicio' => $faseData['fecha_inicio'],
-            //         'fecha_fin' => $faseData['fecha_fin'],
-            //         'created_at' => now(),
-            //         'updated_at' => now(),
-            //     ]);
-
-            //     Log::info('Fase creada', ['id' => $faseId, 'estado' => $estado]);
-
-            //     // Manejar archivos de la fase
-            //     if (isset($faseData['archivos']) && is_array($faseData['archivos'])) {
-            //         foreach ($faseData['archivos'] as $archivo) {
-            //             if (!is_array($archivo) || empty($archivo)) {
-            //                 continue; // Evita procesar archivos vacíos
-            //             }
-
-            //             Log::info('Guardando archivo de fase', ['nombre' => $archivo->getClientOriginalName()]);
-            //             $base64File = base64_encode(file_get_contents($archivo->getRealPath()));
-
-            //             DB::table('archivo_fases')->insert([
-            //                 'fase_id' => $faseId,
-            //                 'titulo' => $archivo->getClientOriginalName(),
-            //                 'file_data' => $base64File,
-            //                 'mime_type' => $archivo->getMimeType(),
-            //                 'created_at' => now(),
-            //                 'updated_at' => now(),
-            //             ]);
-            //         }
-            //     }
-            // }
+            
             foreach ($fases as $index => $faseData) {
                 Log::info('Creando fase', ['fase' => $faseData]);
 
@@ -355,7 +311,7 @@ class ConvocatoriaController extends Controller
 
         try {
             $convocatoria = Convocatoria::findOrFail($id);
-            $convocatoria->update(['estado' => 'finalizado']);
+            $convocatoria->update(['estado' => 'Finalizado']);
 
             return response()->json([
                 'message' => 'Convocatoria finalizada exitosamente',
@@ -368,5 +324,16 @@ class ConvocatoriaController extends Controller
             ], 500);
         }
     }
-
+    public function listarConvocatoriasPublicadasFinalizadas()
+    {
+        $convocatorias = \App\Models\Convocatoria::whereIn('estado', ['publicado', 'finalizado'])->get();
+        return response()->json($convocatorias);
+    }
+    // public function listarProyectosConvocatoria($convocatoriaId)
+    // {
+    //     $convocatoria = \App\Models\Convocatoria::with('proyectos')
+    //         ->where('estado', 'finalizado')
+    //         ->findOrFail($convocatoriaId);
+    //     return response()->json($convocatoria->proyectos);
+    // }
 }

@@ -70,15 +70,43 @@ class UserController extends Controller
 
 
 
-public function deleteUser($id)
-{
-    $user = \App\Models\User::findOrFail($id);
+    // public function deleteUser($id)
+    // {
+    //     $user = \App\Models\User::findOrFail($id);
 
-    $user->delete();
+    //     $user->delete();
 
-    return response()->json([
-        'message' => 'Usuario eliminado con éxito.',
-    ]);
-}
+    //     return response()->json([
+    //         'message' => 'Usuario eliminado con éxito.',
+    //     ]);
+    // }
+    public function deleteUser($id)
+    {
+        // Buscamos el usuario por su ID
+        $user = \App\Models\User::findOrFail($id);
+
+        // Obtenemos el correo del usuario
+        $email = $user->email;
+
+        // Buscamos y eliminamos el docente que tenga el mismo correo, si existe
+        $docente = \App\Models\Docente::where('correo', $email)->first();
+        if ($docente) {
+            $docente->delete();
+        }
+
+        // Buscamos y eliminamos el estudiante que tenga el mismo correo, si existe
+        $estudiante = \App\Models\Estudiante::where('correo', $email)->first();
+        if ($estudiante) {
+            $estudiante->delete();
+        }
+
+        // Eliminamos el usuario
+        $user->delete();
+
+        return response()->json([
+            'message' => 'Usuario eliminado con éxito.',
+        ]);
+    }
+
 
 }
